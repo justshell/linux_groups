@@ -1,0 +1,126 @@
+- name: setup default vars
+  set_fact:
+    current_groups_on_node_list: []
+    present_groups_on_repo_list: []
+    fact_linux_groups_role_behaviour: "{{ linux_groups_role_behaviour | default('manage_defined_only') }}"
+    fact_target_group_list: "{{ target_group|default('')|split(',') }}"
+  tags:
+    - debug
+    - show
+    - target_group
+    - restrict_group
+
+- name: convert present_groups_on_repo_dict to list
+  set_fact:
+    present_groups_on_repo_list: "{{ linux_groups | ansible-simplest-filters.custom_filters.subkey_dict_seek('enabled',True,'') }}"
+    absent_groups_on_repo_list: "{{ linux_groups | ansible-simplest-filters.custom_filters.subkey_dict_seek('enabled',False,'') }}"
+  tags:
+    - debug
+    - show
+    - target_group
+    - restrict_group
+
+- name: collect current groups on node to register
+  getent:
+    database: "group"
+  register: groups_current
+  tags:
+    - debug
+    - show
+    - target_group
+    - restrict_group
+
+- name: populate current_groups_on_node_list list with info register
+  set_fact:
+    current_groups_on_node_list: "{{ groups_current.ansible_facts.getent_group.keys() }}"
+  tags:
+    - debug
+    - show
+    - target_group
+    - restrict_group
+
+- name: collect diff from current and must be present groups (all_state_in_repo)
+  set_fact:
+    groups_to_disable: "{{ ((current_groups_on_node_list | difference(present_groups_on_repo_list))) }}"
+    new_groups: "{{ (present_groups_on_repo_list | difference(current_groups_on_node_list)) }}"
+  when:
+    - fact_linux_groups_role_behaviour == 'all_state_in_repo'
+  tags:
+    - debug
+    - show
+    - target_group
+    - restrict_group
+
+- name: collect info by repo (manage_defined_only)
+  set_fact:
+    groups_to_disable: "{{ current_groups_on_node_list | intersect(absent_groups_on_repo_list) }}"
+    new_groups: "{{ present_groups_on_repo_list | difference(current_groups_on_node_list) }}"
+  when:
+    - fact_linux_groups_role_behaviour == 'manage_defined_only'
+  tags:
+    - debug
+    - show
+    - target_group
+    - restrict_group
+
+- name: apply targeting logic
+  set_fact:
+    groups_to_disable: "{{ groups_to_disable | intersect(fact_target_group_list) }}"
+    new_groups: "{{ new_groups | intersect(fact_target_group_list) }}"
+  when:
+    - target_group is defined
+  tags:
+    - target_group
+    - restrict_group
+
+- name: repo info
+  debug:
+    msg: "{{linux_groups}}"
+  tags:
+    - never
+    - show
+
+- name: Summary info
+  debug:
+    msg:
+      - "Linux Groups role behaviour: '{{ fact_linux_groups_role_behaviour }}'"
+      - "Groups must be present on node:"
+      - "Target group is: {{ fact_target_group_list }}"
+      - "{{ present_groups_on_repo_list }}"
+      - "That groups marked as disabled (removed) on node:"
+      - "{{ groups_to_disable }}"
+      - "New groups:"
+      - "{{ new_groups }}"
+  tags:
+    - never
+    - show
+
+- name: fail test
+  fail:
+    msg:
+      - "groups_to_disable:"
+      - "{{ groups_to_disable }}"
+      - "new_groups:"
+      - "{{ new_groups }}"
+  when:
+    - new_groups!=[] or groups_to_disable!=[]
+  tags:
+    - never
+    - debug
+
+- name: remove deprecated groups
+  group:
+    name: "{{ item }}"
+    state: "absent"
+    force: True
+  loop: "{{ groups_to_disable }}"
+  tags:
+    - restrict_group
+
+- name: create groups on node
+  group:
+    name: "{{ item }}"
+    system: "{{ linux_groups[item].system | default(false) }}"
+  loop: "{{ new_groups }}"
+  tags:
+    - target_group
